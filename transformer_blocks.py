@@ -72,9 +72,9 @@ class Tower(nn.Module):
 
 
         if self.global_pool:
-            return torch.mean(x, dim=1)
+            return torch.mean(out, dim=1)
         else:
-            return x
+            return out
 
 
 def test_dims():
