@@ -35,7 +35,42 @@ class Block(nn.Module):
         attn =  attn.transpose(1,2).contiguous().view(attn.size(0), attn.size(2), -1) #END MHA
 
         #GPT2 moves layer norm on the inside of the function - applied before attn and mlp. 
-        # also could add another projection on attn output.
+        # also I use no out proj here
         x = self.norm1(x + attn)
         x = self.norm2(x + self.mlp(x))
         return x
+
+def Tower(nn.Module):
+    # input is (bs,n,d) n sequences of dim d (e.g. word embeddings, or flattened image patches) 
+    # output is (bs, n,d) OR (bs,d) if global_pool is True
+    def __init__(self, embed_dim, seq_len, n_layers, use_pos_embeddings,
+                 dropout=0.1, n_heads=4, n_class=1, mlp_multiplier=2, is_causal=False, global_pool=False):
+        super().__init__()
+        self.use_pos_embeddings = use_pos_embeddings
+
+        self.blocks = nn.ModuleList([[Block(embed_dim=embed_dim, 
+                                    n_heads=n_heads, 
+                                    dropout=dropout, 
+                                    mlp_multiplier=mlp_multiplier, 
+                                    is_causal=is_causal) for i in range(n_layers)]
+
+         self.tower = nn.Sequential(*self.blocks)
+
+        if use_pos_embeddings:
+            #simple fixed learned positional encodings for now:
+            self.pos_embed = nn.Embedding(seq_len, embed_dim)
+            self.register_buffer('precomputed_pos_enc', torch.arange(0, seq_len).long())
+
+    def forward(self, x):
+            
+        if self.use_pos_embeddings:
+            pos_enc = self.precomputed_pos_enc[:x.size(1)].expand(x.size(0), -1)
+            out = self.tower(x+self.pos_embed(pos_enc))
+        else:
+            out = self.tower(x)
+
+
+        if global_pool:
+            return torch.mean(x, dim=1)
+        else:
+            return x
