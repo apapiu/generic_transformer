@@ -49,13 +49,13 @@ class Tower(nn.Module):
         self.use_pos_embeddings = use_pos_embeddings
         self.global_pool = global_pool
 
-        self.blocks = nn.ModuleList([Block(embed_dim=embed_dim, 
+        #self.blocks = nn.ModuleList()
+
+        self.tower = nn.Sequential(*[Block(embed_dim=embed_dim, 
                                     n_heads=n_heads, 
                                     dropout=dropout, 
                                     mlp_multiplier=mlp_multiplier, 
                                     is_causal=is_causal) for i in range(n_layers)])
-
-        self.tower = nn.Sequential(*self.blocks)
 
         if use_pos_embeddings:
             #simple fixed learned positional encodings for now:
