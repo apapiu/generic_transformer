@@ -40,7 +40,7 @@ class Block(nn.Module):
         x = self.norm2(x + self.mlp(x))
         return x
 
-def Tower(nn.Module):
+class Tower(nn.Module):
     # input is (bs,n,d) n sequences of dim d (e.g. word embeddings, or flattened image patches) 
     # output is (bs, n,d) OR (bs,d) if global_pool is True
     def __init__(self, embed_dim, seq_len, n_layers, use_pos_embeddings,
