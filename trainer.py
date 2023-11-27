@@ -10,6 +10,8 @@ import torchmetrics
 from torchview import draw_graph
 from torchsummary import summary
 
+from tqdm import tqdm
+
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class Trainer():
