@@ -1,4 +1,4 @@
-
+import torch
 import torch.nn as nn
 
 class Block(nn.Module):
@@ -47,14 +47,15 @@ class Tower(nn.Module):
                  dropout=0.1, n_heads=4, n_class=1, mlp_multiplier=2, is_causal=False, global_pool=False):
         super().__init__()
         self.use_pos_embeddings = use_pos_embeddings
+        self.global_pool = global_pool
 
-        self.blocks = nn.ModuleList([[Block(embed_dim=embed_dim, 
+        self.blocks = nn.ModuleList([Block(embed_dim=embed_dim, 
                                     n_heads=n_heads, 
                                     dropout=dropout, 
                                     mlp_multiplier=mlp_multiplier, 
-                                    is_causal=is_causal) for i in range(n_layers)]
+                                    is_causal=is_causal) for i in range(n_layers)])
 
-         self.tower = nn.Sequential(*self.blocks)
+        self.tower = nn.Sequential(*self.blocks)
 
         if use_pos_embeddings:
             #simple fixed learned positional encodings for now:
@@ -70,7 +71,18 @@ class Tower(nn.Module):
             out = self.tower(x)
 
 
-        if global_pool:
+        if self.global_pool:
             return torch.mean(x, dim=1)
         else:
             return x
+
+
+def test_dims():
+    b = Block(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, is_causal=False)
+    t = Tower(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, n_layers=4, 
+            seq_len=64, use_pos_embeddings=True, global_pool=True)
+
+    x = torch.randn(32, 64, 256)
+
+    assert b(x).shape == (32, 64, 256) 
+    assert t(x).shape == (32, 256) 
