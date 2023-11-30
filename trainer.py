@@ -14,6 +14,12 @@ from tqdm import tqdm
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+def to_device(data, device):
+    """Move tensor(s) to chosen device"""
+    if isinstance(data, (list,tuple)):
+        return [to_device(x, device) for x in data]
+    return data.to(device)
+
 class Trainer():
     def __init__(self, model, loss_fn, lr=0.0003, T_max=10000, weight_decay=0):
         super().__init__()
@@ -33,7 +39,7 @@ class Trainer():
     def train_step(self, x, y):
         self.optimizer.zero_grad()
 
-        x, y = x.to(device), y.to(device)
+        x, y = to_device(x, device), to_device(y, device)
 
         # Forward pass with mixed precision
         with autocast():
@@ -55,7 +61,7 @@ class Trainer():
 
         self.model.eval()
         for x, y in val_loader:
-            x, y = x.to(device), y.to(device)
+            x, y = to_device(x, device), to_device(y, device)
             preds = self.model(x)
             val_metric.update(preds, y)
 
