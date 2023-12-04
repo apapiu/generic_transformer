@@ -1,6 +1,30 @@
 import torch
 import torch.nn as nn
 
+
+### attention on QKV - causal/not causal/with mask
+class Attention(nn.Module):
+    def forward(self, q, k, v):
+
+        #N, D
+        
+        q, k, v = [x.view(x.size(0), x.size(1), self.n_heads, d_k).transpose(1, 2) for x in [q, k, v]]
+        attn = nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None,
+                                                                is_causal=self.is_causal,
+                                                                dropout_p=self.dropout_level)
+        attn =  attn.transpose(1,2).contiguous().view(attn.size(0), attn.size(2), -1) #END MHA
+
+#Self Attention
+
+#Cross Attention
+
+### MLP/sep conv.
+
+
+#Then encoder block becomes: Self attn + MLP (or sep conv
+#decoder block becomes: Masked Self attn + Cross attn + MLP
+
+
 class Block(nn.Module):
     def __init__(self, embed_dim, n_heads, dropout, mlp_multiplier, is_causal):
         super().__init__()
