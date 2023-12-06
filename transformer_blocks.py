@@ -83,10 +83,10 @@ class MLPSepConv(nn.Module):
 
 
 class EncoderBlock(nn.Module):
-    def __init__(self, embed_dim, is_causal, mlp_multiplier, dropout_level):
+    def __init__(self, embed_dim, is_causal, mlp_multiplier, dropout_level, mlp_class=MLP):
         super().__init__()
         self.self_attention = SelfAttention(embed_dim, is_causal, dropout_level, n_heads=embed_dim//64)
-        self.mlp = MLPSepConv(embed_dim, mlp_multiplier, dropout_level)
+        self.mlp = mlp_class(embed_dim, mlp_multiplier, dropout_level)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
@@ -111,26 +111,23 @@ class DecoderBlock(nn.Module):
         x = self.norm3(self.mlp(x) + x)
         return x
 
-#######################################################################
-
-
-
 class Tower(nn.Module):
     # input is (bs,n,d) n sequences of dim d (e.g. word embeddings, or flattened image patches)
     # output is (bs, n,d) OR (bs,d) if global_pool is True
 
     def __init__(self, embed_dim, seq_len, n_layers, use_pos_embeddings,
-                 dropout=0, n_heads=4, n_class=1, mlp_multiplier=2, is_causal=False, global_pool=False):
+                 dropout=0, n_heads=4, n_class=1, mlp_multiplier=2, is_causal=False, global_pool=False, 
+                 block_class=EncoderBlock,
+                 mlp_class=MLP):
         super().__init__()
         self.use_pos_embeddings = use_pos_embeddings
         self.global_pool = global_pool
 
-        #self.blocks = nn.ModuleList()
-
-        self.tower = nn.Sequential(*[EncoderBlock(embed_dim=embed_dim,
+        self.tower = nn.Sequential(*[block_class(embed_dim=embed_dim,
                                     dropout_level=dropout,
                                     mlp_multiplier=mlp_multiplier,
-                                    is_causal=is_causal) for i in range(n_layers)])
+                                    is_causal=is_causal,
+                                    mlp_class=mlp_class) for i in range(n_layers)])
 
         if use_pos_embeddings:
             #simple fixed learned positional encodings for now:
@@ -144,7 +141,6 @@ class Tower(nn.Module):
             out = self.tower(x+self.pos_embed(pos_enc))
         else:
             out = self.tower(x)
-
 
         if self.global_pool:
             return torch.mean(out, dim=1)
