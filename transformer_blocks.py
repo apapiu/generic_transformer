@@ -96,11 +96,11 @@ class EncoderBlock(nn.Module):
         return x
 
 class DecoderBlock(nn.Module):
-    def __init__(self, embed_dim, is_causal, mlp_multiplier, dropout_level):
+    def __init__(self, embed_dim, is_causal, mlp_multiplier, dropout_level, mlp_class=MLP):
         super().__init__()
-        self.self_attention = SelfAttention(is_causal=is_causal)
-        self.cross_attention = CrossAttention(is_causal=False)
-        self.mlp = MLP(embed_dim, mlp_multiplier, dropout_level)
+        self.self_attention = SelfAttention(embed_dim, is_causal, dropout_level, n_heads=embed_dim//64)
+        self.cross_attention = CrossAttention(embed_dim, is_causal=False, dropout_level=0, n_heads=4)
+        self.mlp = mlp_class(embed_dim, mlp_multiplier, dropout_level)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.norm3 = nn.LayerNorm(embed_dim)
@@ -152,8 +152,6 @@ def test_dims():
     b = Block(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, is_causal=False)
     t = Tower(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, n_layers=4,
             seq_len=64, use_pos_embeddings=True, global_pool=True)
-
-
 
     mha = MHAttention()
     multihead_attn = torch.nn.MultiheadAttention(256, 4, batch_first=True)
