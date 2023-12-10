@@ -2,6 +2,26 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
+class SinusoidalEmbedding(nn.Module):
+    def __init__(self, embedding_min_frequency=1.0, embedding_max_frequency=1000.0, embedding_dims=32):
+        super(SinusoidalEmbedding, self).__init__()
+
+        frequencies = torch.exp(
+            torch.linspace(
+                torch.log(torch.tensor(embedding_min_frequency)),
+                torch.log(torch.tensor(embedding_max_frequency)),
+                embedding_dims // 2)
+            )
+
+        self.register_buffer('angular_speeds', 2.0 * torch.pi * frequencies)
+
+    def forward(self, x):
+        angular_speeds = self.angular_speeds
+
+        embeddings = torch.cat([torch.sin(angular_speeds * x),
+                                torch.cos(angular_speeds * x)], dim=-1)
+        return embeddings
+
 class MHAttention(nn.Module):
     def __init__(self, is_causal=False, dropout_level=0, n_heads=4):
         super().__init__()
