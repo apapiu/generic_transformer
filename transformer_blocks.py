@@ -48,7 +48,7 @@ class MHAttention(nn.Module):
 class SelfAttention(nn.Module):
     def __init__(self, embed_dim, is_causal=False, dropout_level=0, n_heads=4):
         super().__init__()
-        self.qkv_linear = nn.Linear(embed_dim, 3*embed_dim)
+        self.qkv_linear = nn.Linear(embed_dim, 3*embed_dim, bias=False)
         self.mha = MHAttention(is_causal, dropout_level, n_heads)
         #self.mha = nn.MultiheadAttention(embed_dim, n_heads, batch_first=True, dropout=dropout_level) - doesn't work?
 
@@ -59,8 +59,8 @@ class SelfAttention(nn.Module):
 class CrossAttention(nn.Module):
     def __init__(self, embed_dim, is_causal=False, dropout_level=0, n_heads=4):
         super().__init__()
-        self.kv_linear = nn.Linear(embed_dim, 2*embed_dim)
-        self.q_linear = nn.Linear(embed_dim, embed_dim)
+        self.kv_linear = nn.Linear(embed_dim, 2*embed_dim, bias=False)
+        self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.mha = MHAttention(is_causal, dropout_level, n_heads)
 
     def forward(self, x, y):
