@@ -168,6 +168,32 @@ class Tower(nn.Module):
             return out
 
 
+class GPTmodel(nn.Module):
+    def __init__(self, embed_dim, seq_len, n_layers, dropout, vocab_size):
+        super().__init__()
+
+        self.embed = nn.Embedding(vocab_size, embed_dim)
+
+        self.tower = Tower(embed_dim, 
+                           seq_len, 
+                           n_layers, 
+                           use_pos_embeddings=True,
+                           dropout=dropout,
+                           n_heads=embed_dim//64,
+                           mlp_multiplier=4, 
+                           is_causal=True, 
+                           global_pool=False, 
+                           block_class=EncoderBlock, 
+                           mlp_class=MLP)
+
+        self.out_proj = nn.Sequential(nn.LayerNorm(embed_dim),
+                                      nn.Linear(embed_dim, vocab_size))
+
+    def forward(self, x):
+        x = self.tower(self.embed(x))
+        return self.out_proj(x)
+
+
 def test_dims():
     b = Block(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, is_causal=False)
     t = Tower(embed_dim=256, n_heads=2, dropout=0, mlp_multiplier=2, n_layers=4,
