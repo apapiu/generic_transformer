@@ -111,8 +111,8 @@ class EncoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
 
     def forward(self, x):
-        x = self.norm1(self.self_attention(x) + x)
-        x = self.norm2(self.mlp(x) + x)
+        x = self.self_attention(self.norm1(x)) + x
+        x = self.mlp(self.norm2(x)) + x
         return x
 
 class DecoderBlock(nn.Module):
