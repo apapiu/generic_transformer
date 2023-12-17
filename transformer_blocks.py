@@ -39,7 +39,7 @@ class MHAttention(nn.Module):
         out = nn.functional.scaled_dot_product_attention(q, k, v,
                                                           attn_mask=attn_mask,
                                                           is_causal=self.is_causal,
-                                                          dropout_p=self.dropout_level)
+                                                          dropout_p=self.dropout_level if self.training else 0)
 
         out = rearrange(out, 'bs h n d -> bs n (d h)', h=self.n_heads)
 
