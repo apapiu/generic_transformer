@@ -3,8 +3,9 @@ import torch.nn as nn
 import torch
 from einops.layers.torch import Rearrange
 
+
 class DenoiserTransBlock(nn.Module):
-    def __init__(self):
+    def __init__(self, patch_size, img_size, n_channels, embed_dim, dropout, n_layers, mlp_multiplier=4):
         super().__init__()
 
         self.patch_size = patch_size
@@ -24,7 +25,7 @@ class DenoiserTransBlock(nn.Module):
                                        nn.LayerNorm(patch_dim),
                                        nn.Linear(patch_dim, self.embed_dim),
                                        nn.LayerNorm(self.embed_dim)
-                                       ) ##n, d
+                                       )
 
         self.rearrange2 = Rearrange('b (h w) (c p1 p2) -> b c (h p1) (w p2)',
                                    h=int(self.img_size/self.patch_size),
@@ -55,16 +56,20 @@ class DenoiserTransBlock(nn.Module):
 
         return self.out_proj(x)
 
-
 class Denoiser(nn.Module):
-    def __init__(self, 
+    def __init__(self,
                  image_size,
                  noise_embed_dims):
         super().__init__()
 
+        n = n_channels
+
+        self.scaler = GradScaler()
+
         self.img_size = image_size
         self.noise_embed_dims = noise_embed_dims
         self.embed_dim = embed_dim
+
 
         self.fourier_feats = nn.Sequential(SinusoidalEmbedding(embedding_dims=noise_embed_dims),
                                            nn.Linear(noise_embed_dims, self.embed_dim),
@@ -73,9 +78,13 @@ class Denoiser(nn.Module):
                                            )
 
         self.denoiser_trans_block = DenoiserTransBlock()
-
         self.global_step = 0
+
+        self.loss_fn = nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+
         self.norm = nn.LayerNorm(self.embed_dim)
+
         self.label_proj = nn.Linear(512, self.embed_dim)
 
 
@@ -83,10 +92,30 @@ class Denoiser(nn.Module):
 
         noise_level = self.fourier_feats(noise_level).unsqueeze(1)
 
-        label = self.label_proj(label).unsqueeze(1) 
+        label = self.label_proj(label).unsqueeze(1)
 
         noise_label_emb = torch.cat([noise_level, label], dim=1) #bs, 2, d
         noise_label_emb = self.norm(noise_label_emb)
+
+        x = self.denoiser_trans_block(x,noise_label_emb)
+
+        return x
+
+    def train_step(self, x, noise_level, label, y):
+
+        with autocast():
+                pred = self.forward(x, noise_level, label)
+                loss = self.loss_fn(pred, y)
+
+        self.optimizer.zero_grad()
+
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
+        self.global_step += 1
+
+        return loss
 
         x = self.denoiser_trans_block(x,noise_label_emb)
 
