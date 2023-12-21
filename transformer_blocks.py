@@ -10,8 +10,8 @@ class SinusoidalEmbedding(nn.Module):
             torch.linspace(
                 torch.log(torch.tensor(embedding_min_frequency)),
                 torch.log(torch.tensor(embedding_max_frequency)),
-                embedding_dims // 2)
-            )
+                embedding_dims // 2
+            ))
 
         self.register_buffer('angular_speeds', 2.0 * torch.pi * frequencies)
 
@@ -85,7 +85,6 @@ class MLP(nn.Module):
 class MLPSepConv(nn.Module):
     def __init__(self, embed_dim, mlp_multiplier, dropout_level):
         super().__init__()
-        self.h = self.w = 8
         self.mlp = nn.Sequential(
             nn.Conv2d(embed_dim, mlp_multiplier*embed_dim, kernel_size=1, padding='same'),
             nn.Conv2d(mlp_multiplier*embed_dim, mlp_multiplier*embed_dim, kernel_size=3,
@@ -96,7 +95,8 @@ class MLPSepConv(nn.Module):
             )
 
     def forward(self, x):
-        x = rearrange(x, 'bs (h w) d -> bs d h w', h=self.h, w=self.h)
+        w = h = int(np.sqrt(x.size(1))) #only square images for now
+        x = rearrange(x, 'bs (h w) d -> bs d h w', h=h, w=w)
         x = self.mlp(x)
         x = rearrange(x, 'bs d h w -> bs (h w) d')
         return x
