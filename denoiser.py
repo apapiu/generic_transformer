@@ -1,11 +1,15 @@
-from transformer_blocks import EncoderBlock, DecoderBlock, MLPSepConv, SinusoidalEmbedding
+from transformer_blocks import EncoderBlock, DecoderBlock, MLPSepConv, SinusoidalEmbedding, MHAttention
+
 import torch.nn as nn
 import numpy as np
+import random
 import torch
 import torchvision
 from einops.layers.torch import Rearrange
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import Dataset, DataLoader
+
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -90,6 +94,7 @@ class Denoiser(nn.Module):
         self.global_step = 0
         self.loss_fn = nn.MSELoss()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
+         #self.scheduler = GradualWarmupScheduler(self.optimizer, total_warmup_steps, initial_lr, final_lr)
 
 
     def forward(self, x, noise_level, label):
@@ -128,6 +133,7 @@ class Denoiser(nn.Module):
 
 @torch.no_grad()
 def diffusion(model,
+              vae,
               n_iter=30,
               labels=None,
               num_imgs=64,
@@ -198,3 +204,59 @@ def count_parameters_per_layer(model):
         print(f"{name}: {param.numel()} parameters")
 
 to_pil = torchvision.transforms.ToPILImage()
+
+from torch.optim.lr_scheduler import _LRScheduler
+
+class GradualWarmupScheduler(_LRScheduler):
+    def __init__(self, optimizer, total_warmup_steps, initial_lr, final_lr, last_epoch=-1):
+        self.total_warmup_steps = total_warmup_steps
+        self.initial_lr = initial_lr
+        self.final_lr = final_lr
+        super().__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < self.total_warmup_steps:
+            # Calculate the learning rate based on the current epoch
+            lr = self.initial_lr + (self.final_lr - self.initial_lr) * (self.last_epoch / self.total_warmup_steps)
+            return [lr for _ in self.base_lrs]
+        else:
+            # After warm-up, continue with the base learning rate
+            return self.base_lrs
+        
+
+class CustomDataset(Dataset):
+    def __init__(self, latent_data, label_embeddings1, label_embeddings2):
+        self.latent_data = latent_data
+        self.label_embeddings1 = label_embeddings1
+        self.label_embeddings2 = label_embeddings2
+
+    def __len__(self):
+        return len(self.latent_data)
+
+    def __getitem__(self, idx):
+        x = self.latent_data[idx]
+        if random.random() < 0.5:
+            y = self.label_embeddings1[idx]
+        else:
+            y = self.label_embeddings2[idx]
+        return x, y
+
+def update_ema(ema_model, model, alpha=0.999):
+    with torch.no_grad():
+        for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
+            ema_param.data.mul_(alpha).add_(model_param.data, alpha=1-alpha)
+
+
+def set_dropout_to_zero(model):
+    for module in model.modules():
+        if isinstance(module, nn.Dropout):
+            module.p = 0.0
+            print(module)
+
+    for module in model.modules():
+        if isinstance(module, MHAttention):
+            #module.p = 0.0
+            module.dropout_level = 0
+            print(module.dropout_level)
+
+    
