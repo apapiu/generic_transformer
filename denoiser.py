@@ -4,10 +4,14 @@ import numpy as np
 import torch
 import torchvision
 from einops.layers.torch import Rearrange
+from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast
 
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class DenoiserTransBlock(nn.Module):
-    def __init__(self, patch_size, img_size, n_channels, embed_dim, dropout, n_layers, mlp_multiplier=4):
+    def __init__(self, patch_size, img_size, embed_dim, dropout, n_layers, mlp_multiplier=4, n_channels=4):
         super().__init__()
 
         self.patch_size = patch_size
@@ -58,20 +62,18 @@ class DenoiserTransBlock(nn.Module):
 
         return self.out_proj(x)
 
+
+#model = Denoiser(image_size=16, noise_embed_dims=128, patch_size=2, embed_dim=256, dropout=0.1, n_layers=6)
 class Denoiser(nn.Module):
     def __init__(self,
-                 image_size,
-                 noise_embed_dims):
+                 image_size, noise_embed_dims, patch_size, embed_dim, dropout, n_layers,
+                 text_emb_size=768):
         super().__init__()
 
-        n = n_channels
 
-        self.scaler = GradScaler()
-
-        self.img_size = image_size
+        self.image_size = image_size
         self.noise_embed_dims = noise_embed_dims
         self.embed_dim = embed_dim
-
 
         self.fourier_feats = nn.Sequential(SinusoidalEmbedding(embedding_dims=noise_embed_dims),
                                            nn.Linear(noise_embed_dims, self.embed_dim),
@@ -79,15 +81,15 @@ class Denoiser(nn.Module):
                                            nn.Linear(self.embed_dim, self.embed_dim)
                                            )
 
-        self.denoiser_trans_block = DenoiserTransBlock()
-        self.global_step = 0
-
-        self.loss_fn = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-
+        self.denoiser_trans_block = DenoiserTransBlock(patch_size, image_size, embed_dim, dropout, n_layers)
         self.norm = nn.LayerNorm(self.embed_dim)
+        self.label_proj = nn.Linear(text_emb_size, self.embed_dim)
 
-        self.label_proj = nn.Linear(512, self.embed_dim)
+        #opt stuff:
+        self.scaler = GradScaler()
+        self.global_step = 0
+        self.loss_fn = nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
 
 
     def forward(self, x, noise_level, label):
@@ -119,24 +121,22 @@ class Denoiser(nn.Module):
 
         return loss
 
-        x = self.denoiser_trans_block(x,noise_label_emb)
-
-        return x
-
 
 ###########
 #diffusion:
 ###########
 
 @torch.no_grad()
-def diffusion(n_iter=30,
+def diffusion(model,
+              n_iter=30,
               labels=None,
               num_imgs=64,
               class_guidance=3,
               seed=10,
               scale_factor=8,
               dyn_thresh=False,
-              model=model):
+              img_size=16
+              ):
 
     noise_levels = 1 - np.power(np.arange(0.0001, 0.99, 1 / n_iter), 1 / 3)
     noise_levels[-1] = 0.01
@@ -198,6 +198,3 @@ def count_parameters_per_layer(model):
         print(f"{name}: {param.numel()} parameters")
 
 to_pil = torchvision.transforms.ToPILImage()
-
-
-
