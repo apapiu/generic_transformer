@@ -36,6 +36,7 @@ class MHAttention(nn.Module):
         assert k.size(-2) == v.size(-2)
 
         q, k, v = [rearrange(x, 'bs n (d h) -> bs h n d', h=self.n_heads) for x in [q,k,v]]
+        q, k, v = q.contiguous(), k.contiguous(), v.contiguous()
 
         out = nn.functional.scaled_dot_product_attention(q, k, v,
                                                           attn_mask=attn_mask,
