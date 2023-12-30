@@ -9,10 +9,11 @@ from einops.layers.torch import Rearrange
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import Dataset, DataLoader
+import lightning as L
+import wandb
 
 
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class DenoiserTransBlock(nn.Module):
     def __init__(self, patch_size, img_size, embed_dim, dropout, n_layers, mlp_multiplier=4, n_channels=4):
@@ -67,13 +68,11 @@ class DenoiserTransBlock(nn.Module):
         return self.out_proj(x)
 
 
-#model = Denoiser(image_size=16, noise_embed_dims=128, patch_size=2, embed_dim=256, dropout=0.1, n_layers=6)
 class Denoiser(nn.Module):
     def __init__(self,
                  image_size, noise_embed_dims, patch_size, embed_dim, dropout, n_layers,
                  text_emb_size=768):
         super().__init__()
-
 
         self.image_size = image_size
         self.noise_embed_dims = noise_embed_dims
@@ -89,13 +88,6 @@ class Denoiser(nn.Module):
         self.norm = nn.LayerNorm(self.embed_dim)
         self.label_proj = nn.Linear(text_emb_size, self.embed_dim)
 
-        #opt stuff:
-        self.scaler = GradScaler()
-        self.global_step = 0
-        self.loss_fn = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
-         #self.scheduler = GradualWarmupScheduler(self.optimizer, total_warmup_steps, initial_lr, final_lr)
-
 
     def forward(self, x, noise_level, label):
 
@@ -110,21 +102,71 @@ class Denoiser(nn.Module):
 
         return x
 
-    def train_step(self, x, noise_level, label, y):
+class LigtningDenoiser(L.LightningModule):
 
-        with autocast():
-                pred = self.forward(x, noise_level, label)
-                loss = self.loss_fn(pred, y)
+    def __init__(self, model_params, lr=3e-4):
+        super().__init__()
+        self.model = Denoiser(**model_params)
+        self.ema_model = copy.deepcopy(self.model)
 
-        self.optimizer.zero_grad()
+        for param in self.ema_model.parameters():
+            param.requires_grad = False
+    
+        self.lr = lr
+        self.loss_fn = torch.nn.MSELoss()
+        self.scaling_factor = 8
 
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+    def forward(self, x, noise_level, label):
+        return self.model(x, noise_level, label)
 
-        self.global_step += 1
+    def training_step(self, batch, batchidx):
+
+        x, y = batch
+
+        x = x/self.scaling_factor
+        noise_level = torch.tensor(np.random.beta(1, 2.7, len(x)), device=self.device).float()
+        signal_level = 1 - noise_level
+        noise = torch.randn_like(x)
+
+        x_noisy = noise_level.view(-1,1,1,1)*noise + signal_level.view(-1,1,1,1)*x
+        x_noisy = x_noisy.float()
+        label = y
+        
+        prob = 0.15
+        mask = torch.rand(y.size(0), device=self.device) < prob
+        label[mask] = 0 # OR replacement_vector
+
+        preds = self(x_noisy, noise_level.view(-1,1), label)
+        loss = self.loss_fn(preds, x)
+
+        wandb.log({"train_loss":loss}, step=self.global_step)
+
+        update_ema(self.ema_model, self.model, alpha=alpha)
+
+        #put it in on batch end:
+        if self.global_step % 500 == 0:
+            out, out_latent = diffusion(
+                                    model=self.ema_model,
+                                    vae=vae,
+                                    labels=torch.repeat_interleave(emb_val, 8, dim=0),
+                                    num_imgs=64, n_iter=35,
+                                    class_guidance=3,
+                                    scale_factor=self.scaling_factor,
+                                    dyn_thresh=True)
+
+            to_pil((vutils.make_grid((out+1)/2, nrow=8)).clip(0, 1)).save('img.jpg')
+            wandb.log({f"step: {self.global_step}": wandb.Image("img.jpg")})
 
         return loss
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
+    
+
+#lmodel = LigtningDenoiser(model_params)
+#trainer = L.Trainer(precision="16-mixed")
+#trainer.fit(lmodel, train_loader)
+
 
 
 ###########
@@ -182,7 +224,7 @@ def diffusion(model,
         #new_img = (np.sqrt(1 - next_noise**2)) * x0_pred + next_noise * (new_img - np.sqrt(1 - curr_noise**2)* x0_pred)/ curr_noise
 
         if dyn_thresh:
-            s = x0_pred.abs().quantile(0.99)
+            s = x0_pred.abs().float().quantile(0.99)
             x0_pred = x0_pred.clip(-s, s)/(s/2) #rescale to -2,2
 
     #predict with model one more time to get x0
@@ -241,10 +283,11 @@ class CustomDataset(Dataset):
             y = self.label_embeddings2[idx]
         return x, y
 
+@torch.no_grad()
 def update_ema(ema_model, model, alpha=0.999):
-    with torch.no_grad():
-        for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
-            ema_param.data.mul_(alpha).add_(model_param.data, alpha=1-alpha)
+    """update ema model in place"""
+    for ema_param, model_param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.data.mul_(alpha).add_(model_param.data, alpha=1-alpha)
 
 
 def set_dropout_to_zero(model):
