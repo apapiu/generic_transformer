@@ -11,8 +11,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import Dataset, DataLoader
 
 
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class DenoiserTransBlock(nn.Module):
     def __init__(self, patch_size, img_size, embed_dim, dropout, n_layers, mlp_multiplier=4, n_channels=4):
