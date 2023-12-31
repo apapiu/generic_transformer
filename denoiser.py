@@ -1,4 +1,4 @@
-from transformer_blocks import EncoderBlock, DecoderBlock, MLPSepConv, SinusoidalEmbedding, MHAttention
+from transformer_blocks import DecoderBlock, MLPSepConv, SinusoidalEmbedding, MHAttention
 
 import torch.nn as nn
 import numpy as np
@@ -7,11 +7,8 @@ import torch
 import torchvision
 from einops.layers.torch import Rearrange
 from tqdm import tqdm
-from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import Dataset, DataLoader
 
-
-#device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class DenoiserTransBlock(nn.Module):
     def __init__(self, patch_size, img_size, embed_dim, dropout, n_layers, mlp_multiplier=4, n_channels=4):
@@ -88,14 +85,6 @@ class Denoiser(nn.Module):
         self.norm = nn.LayerNorm(self.embed_dim)
         self.label_proj = nn.Linear(text_emb_size, self.embed_dim)
 
-        #opt stuff:
-        self.scaler = GradScaler()
-        self.global_step = 0
-        self.loss_fn = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
-         #self.scheduler = GradualWarmupScheduler(self.optimizer, total_warmup_steps, initial_lr, final_lr)
-
-
     def forward(self, x, noise_level, label):
 
         noise_level = self.fourier_feats(noise_level).unsqueeze(1)
@@ -109,22 +98,6 @@ class Denoiser(nn.Module):
 
         return x
 
-    def train_step(self, x, noise_level, label, y):
-
-        with autocast():
-                pred = self.forward(x, noise_level, label)
-                loss = self.loss_fn(pred, y)
-
-        self.optimizer.zero_grad()
-
-        self.scaler.scale(loss).backward()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-        self.global_step += 1
-
-        return loss
-
 
 ###########
 #diffusion:
@@ -133,6 +106,7 @@ class Denoiser(nn.Module):
 @torch.no_grad()
 def diffusion(model,
               vae,
+              device,
               n_iter=30,
               labels=None,
               num_imgs=64,
@@ -140,7 +114,7 @@ def diffusion(model,
               seed=10,
               scale_factor=8,
               dyn_thresh=False,
-              img_size=16
+              img_size=16,
               ):
 
     noise_levels = 1 - np.power(np.arange(0.0001, 0.99, 1 / n_iter), 1 / 3)
@@ -181,7 +155,7 @@ def diffusion(model,
         #new_img = (np.sqrt(1 - next_noise**2)) * x0_pred + next_noise * (new_img - np.sqrt(1 - curr_noise**2)* x0_pred)/ curr_noise
 
         if dyn_thresh:
-            s = x0_pred.abs().quantile(0.99)
+            s = x0_pred.abs().float().quantile(0.99)
             x0_pred = x0_pred.clip(-s, s)/(s/2) #rescale to -2,2
 
     #predict with model one more time to get x0
@@ -189,6 +163,150 @@ def diffusion(model,
     x0_pred_img = vae.decode((x0_pred*scale_factor).half())[0].cpu()
 
     return x0_pred_img, x0_pred
+
+
+############
+#accelerate train loop:
+############
+
+from accelerate import Accelerator
+from accelerate import notebook_launcher
+import wandb
+import torchvision.utils as vutils
+import copy
+
+#config:
+
+def training_loop(vae, mixed_precision):
+    accelerator = Accelerator(mixed_precision=mixed_precision)
+    
+    vae = vae.to(accelerator.device)
+    
+    from_scratch = True
+    model_name = 'model_checkpoint_337443.pth'
+    run_id = '1n3t2k3y'
+
+    embed_dim = 256
+    n_layers = 4
+
+    clip_embed_size = 768
+    scaling_factor = 8
+    patch_size = 1
+    image_size = img_size = 16
+    n_channels = 4
+    dropout = 0
+    mlp_multiplier = 4
+
+    batch_size = 256
+    class_guidance = 3
+    lr=3e-4
+
+    alpha = 0.999
+
+    noise_embed_dims = 128
+    diffusion_n_iter = 35
+
+    n_epoch = 5
+
+    #end config:
+
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    print("loading model")
+    
+    if from_scratch:
+        model = Denoiser(image_size=image_size, noise_embed_dims=noise_embed_dims,
+                         patch_size=patch_size, embed_dim=embed_dim, dropout=dropout,
+                         n_layers=n_layers)
+    else:
+        wandb.restore(model_name, run_path=f"apapiu/cifar_diffusion/runs/{run_id}",
+                      replace=True)
+        model = torch.load(model_name)
+
+    print("model loaded")
+    
+    ema_model = copy.deepcopy(model)
+
+    config = {k: v for k, v in locals().items() if k in ['embed_dim', 'n_layers', 'clip_embed_size', 'scaling_factor',
+                                                         'image_size', 'noise_embed_dims', 'dropout',
+                                                         'mlp_multiplier', 'diffusion_n_iter', 'batch_size', 'lr']}
+
+    
+    #opt stuff:
+    global_step = 0
+    loss_fn = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+    
+    print("model prep")
+    model, train_loader, optimizer, ema_model = accelerator.prepare(
+        model, train_loader, optimizer, ema_model
+    )
+    
+    #it logs two different things in multi-GPU:
+    #if accelerator.is_local_main_process:
+    wandb.init(
+        project="cifar_diffusion",
+        config = config)
+
+    print(count_parameters(model))
+    print(count_parameters_per_layer(model))
+
+    for i in range(1, n_epoch+1):
+        print(f'epoch: {i}')
+        
+        state_dict_path = 'curr_state_dict.pth'
+        #torch.save(model.state_dict(), state_dict_path)
+        accelerator.save_model(ema_model, state_dict_path)
+        wandb.save('curr_state_dict.pth/model.safetensors')
+
+        for x, y in tqdm(train_loader):
+            x = x/scaling_factor
+
+            noise_level = torch.tensor(np.random.beta(1, 2.7, len(x)), device=accelerator.device)
+            signal_level = 1 - noise_level
+            noise = torch.randn_like(x)
+            
+            x_noisy = noise_level.view(-1,1,1,1)*noise + signal_level.view(-1,1,1,1)*x
+            
+            x_noisy = x_noisy.float()
+            noise_level = noise_level.float()
+            label = y
+
+            prob = 0.15
+            mask = torch.rand(y.size(0), device=accelerator.device) < prob
+            label[mask] = 0 # OR replacement_vector
+            
+            if global_step % 500 == 0:
+                out, out_latent = diffusion(
+                                        model=ema_model,
+                                        vae=vae,
+                                        device=accelerator.device,
+                                        labels=torch.repeat_interleave(emb_val, 8, dim=0),
+                                        num_imgs=64, n_iter=35,
+                                        class_guidance=3,
+                                        scale_factor=scaling_factor,
+                                        dyn_thresh=True)
+
+                to_pil((vutils.make_grid((out.float()+1)/2, nrow=8)).clip(0, 1)).save('img.jpg')
+                wandb.log({f"step: {global_step}": wandb.Image("img.jpg")})
+
+            model.train()
+    
+            optimizer.zero_grad()
+
+            pred = model(x_noisy, noise_level.view(-1,1), label)
+            loss = loss_fn(pred, x)
+            wandb.log({"train_loss":loss.item()}, step=global_step)
+            accelerator.backward(loss)
+            optimizer.step()
+            
+            update_ema(ema_model, model, alpha=alpha)
+
+            global_step += 1
+            
+# args = (vae, "fp16")
+# notebook_launcher(training_loop, args, num_processes=1)
+
+
 
 ########
 ###utils
@@ -257,5 +375,3 @@ def set_dropout_to_zero(model):
             #module.p = 0.0
             module.dropout_level = 0
             print(module.dropout_level)
-
-    
