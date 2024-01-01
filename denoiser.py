@@ -173,18 +173,21 @@ from accelerate import Accelerator
 from accelerate import notebook_launcher
 import wandb
 import torchvision.utils as vutils
+from safetensors.torch import load_model, save_model
 import copy
 
 #config:
-
-def training_loop(vae, mixed_precision):
-    accelerator = Accelerator(mixed_precision=mixed_precision)
+def training_loop(vae, mixed_precision, emb_val):
+    ###see this for more: https://github.com/huggingface/diffusers/blob/main/examples/textual_inversion/textual_inversion.py
+    ## can't get some stuff to work in multigpu :(  diffusion does not work, EMA does not work, full dataset doesn't work
+    accelerator = Accelerator(mixed_precision=mixed_precision, log_with="wandb")
     
-    vae = vae.to(accelerator.device)
+    if accelerator.is_local_main_process:
+        vae = vae.to(accelerator.device)
     
-    from_scratch = True
-    model_name = 'model_checkpoint_337443.pth'
-    run_id = '1n3t2k3y'
+    from_scratch = False
+    run_id = '3skree8h'
+    model_name = 'curr_state_dict.pth/model.safetensors'
 
     embed_dim = 256
     n_layers = 4
@@ -206,25 +209,27 @@ def training_loop(vae, mixed_precision):
     noise_embed_dims = 128
     diffusion_n_iter = 35
 
-    n_epoch = 5
+    n_epoch = 10
 
     #end config:
 
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    print("loading model")
+    accelerator.print("loading model")
     
-    if from_scratch:
-        model = Denoiser(image_size=image_size, noise_embed_dims=noise_embed_dims,
-                         patch_size=patch_size, embed_dim=embed_dim, dropout=dropout,
-                         n_layers=n_layers)
-    else:
+    model = Denoiser(image_size=image_size, noise_embed_dims=noise_embed_dims,
+                 patch_size=patch_size, embed_dim=embed_dim, dropout=dropout,
+                 n_layers=n_layers)
+    
+    if not from_scratch:
         wandb.restore(model_name, run_path=f"apapiu/cifar_diffusion/runs/{run_id}",
                       replace=True)
-        model = torch.load(model_name)
+        load_model(model, model_name)
+        
 
-    print("model loaded")
+    accelerator.print("model loaded")
     
-    ema_model = copy.deepcopy(model)
+    if accelerator.is_local_main_process:
+        ema_model = copy.deepcopy(model).to(accelerator.device)
 
     config = {k: v for k, v in locals().items() if k in ['embed_dim', 'n_layers', 'clip_embed_size', 'scaling_factor',
                                                          'image_size', 'noise_embed_dims', 'dropout',
@@ -236,27 +241,26 @@ def training_loop(vae, mixed_precision):
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     
-    print("model prep")
-    model, train_loader, optimizer, ema_model = accelerator.prepare(
-        model, train_loader, optimizer, ema_model
+    accelerator.print("model prep")
+    model, train_loader, optimizer = accelerator.prepare(
+        model, train_loader, optimizer
     )
     
-    #it logs two different things in multi-GPU:
-    #if accelerator.is_local_main_process:
-    wandb.init(
-        project="cifar_diffusion",
-        config = config)
+    accelerator.init_trackers(
+    project_name="cifar_diffusion", 
+    config=config
+    )
 
-    print(count_parameters(model))
-    print(count_parameters_per_layer(model))
+    accelerator.print(count_parameters(model))
+    accelerator.print(count_parameters_per_layer(model))
 
     for i in range(1, n_epoch+1):
-        print(f'epoch: {i}')
+        accelerator.print(f'epoch: {i}')
         
-        state_dict_path = 'curr_state_dict.pth'
-        #torch.save(model.state_dict(), state_dict_path)
-        accelerator.save_model(ema_model, state_dict_path)
-        wandb.save('curr_state_dict.pth/model.safetensors')
+        if accelerator.is_local_main_process:
+            state_dict_path = 'curr_state_dict.pth'
+            accelerator.save_model(ema_model, state_dict_path)
+            wandb.save('curr_state_dict.pth/model.safetensors')
 
         for x, y in tqdm(train_loader):
             x = x/scaling_factor
@@ -275,7 +279,7 @@ def training_loop(vae, mixed_precision):
             mask = torch.rand(y.size(0), device=accelerator.device) < prob
             label[mask] = 0 # OR replacement_vector
             
-            if global_step % 500 == 0:
+            if global_step % 500 == 0 and accelerator.is_local_main_process:
                 out, out_latent = diffusion(
                                         model=ema_model,
                                         vae=vae,
@@ -285,7 +289,6 @@ def training_loop(vae, mixed_precision):
                                         class_guidance=3,
                                         scale_factor=scaling_factor,
                                         dyn_thresh=True)
-
                 to_pil((vutils.make_grid((out.float()+1)/2, nrow=8)).clip(0, 1)).save('img.jpg')
                 wandb.log({f"step: {global_step}": wandb.Image("img.jpg")})
 
@@ -295,13 +298,15 @@ def training_loop(vae, mixed_precision):
 
             pred = model(x_noisy, noise_level.view(-1,1), label)
             loss = loss_fn(pred, x)
-            wandb.log({"train_loss":loss.item()}, step=global_step)
+            accelerator.log({"train_loss":loss.item()}, step=global_step)
             accelerator.backward(loss)
             optimizer.step()
             
-            update_ema(ema_model, model, alpha=alpha)
+            if accelerator.is_local_main_process:
+                update_ema(ema_model, model, alpha=alpha)
 
             global_step += 1
+    accelerator.end_training()
             
 # args = (vae, "fp16")
 # notebook_launcher(training_loop, args, num_processes=1)
