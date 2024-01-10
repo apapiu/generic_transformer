@@ -135,6 +135,7 @@ class Denoiser(nn.Module):
 def diffusion(model,
               vae,
               device,
+              model_dtype=torch.float32,
               n_iter=30,
               labels=None,
               num_imgs=64,
@@ -145,8 +146,8 @@ def diffusion(model,
               img_size=16
               ):
 
-    noise_levels = 1 - np.power(np.arange(0.0001, 0.99, 1 / n_iter), 1 / 3)
-    noise_levels[-1] = 0.01
+    noise_levels = 1 - torch.pow(torch.arange(0.0001, 0.99, 1 / n_iter), 1 / 3)
+    noise_levels = noise_levels.tolist()
 
     torch.manual_seed(seed)
     seeds = torch.randn(num_imgs,4,img_size,img_size).to(device)
@@ -157,7 +158,6 @@ def diffusion(model,
 
     model.eval()
 
-
     for i in tqdm(range(len(noise_levels) - 1)):
 
         curr_noise, next_noise = noise_levels[i], noise_levels[i + 1]
@@ -165,10 +165,10 @@ def diffusion(model,
         noises = torch.full((num_imgs,1), curr_noise)
         noises = torch.cat([noises, noises])
 
-
+        new_img = new_img.to(model_dtype)
         x0_pred = model(torch.cat([new_img, new_img]),
-                        noises.to(device),
-                        labels.to(device)
+                        noises.to(device, model_dtype),
+                        labels.to(device, model_dtype)
                         )
 
         x0_pred_label = x0_pred[:num_imgs]
@@ -183,7 +183,7 @@ def diffusion(model,
         #new_img = (np.sqrt(1 - next_noise**2)) * x0_pred + next_noise * (new_img - np.sqrt(1 - curr_noise**2)* x0_pred)/ curr_noise
 
         if dyn_thresh:
-            s = x0_pred.abs().quantile(0.99)
+            s = x0_pred.abs().float().quantile(0.99)
             x0_pred = x0_pred.clip(-s, s)/(s/2) #rescale to -2,2
 
     #predict with model one more time to get x0
