@@ -143,7 +143,8 @@ def diffusion(model,
               seed=10,
               scale_factor=8,
               dyn_thresh=False,
-              img_size=16
+              img_size=16,
+              perc_thresh=0.99
               ):
 
     noise_levels = 1 - torch.pow(torch.arange(0.0001, 0.99, 1 / n_iter), 1 / 3)
@@ -183,7 +184,7 @@ def diffusion(model,
         #new_img = (np.sqrt(1 - next_noise**2)) * x0_pred + next_noise * (new_img - np.sqrt(1 - curr_noise**2)* x0_pred)/ curr_noise
 
         if dyn_thresh:
-            s = x0_pred.abs().float().quantile(0.99)
+            s = x0_pred.abs().float().quantile(perc_thresh)
             x0_pred = x0_pred.clip(-s, s)/(s/2) #rescale to -2,2
 
     #predict with model one more time to get x0
