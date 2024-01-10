@@ -134,6 +134,7 @@ class Denoiser(nn.Module):
 @torch.no_grad()
 def diffusion(model,
               vae,
+              device,
               n_iter=30,
               labels=None,
               num_imgs=64,
