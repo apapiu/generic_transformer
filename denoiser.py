@@ -70,7 +70,7 @@ class DenoiserTransBlock(nn.Module):
 class Denoiser(nn.Module):
     def __init__(self,
                  image_size, noise_embed_dims, patch_size, embed_dim, dropout, n_layers,
-                 text_emb_size=768):
+                 text_emb_size=768, lr=3e-4):
         super().__init__()
 
 
@@ -92,8 +92,8 @@ class Denoiser(nn.Module):
         self.scaler = GradScaler()
         self.global_step = 0
         self.loss_fn = nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=3e-4)
-         #self.scheduler = GradualWarmupScheduler(self.optimizer, total_warmup_steps, initial_lr, final_lr)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        self.scheduler = GradualWarmupScheduler(self.optimizer, 1000, initial_lr=3e-6, final_lr=lr)
 
 
     def forward(self, x, noise_level, label):
@@ -120,6 +120,7 @@ class Denoiser(nn.Module):
         self.scaler.scale(loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
+        self.scheduler.step()
 
         self.global_step += 1
 
